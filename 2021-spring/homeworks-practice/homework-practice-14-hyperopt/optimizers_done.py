@@ -270,18 +270,20 @@ class GPOptimizer(BaseOptimizer):
         else:
             # Разделяем гиперпараметры на числовые и категориальные
             cat_params, num_params = [], []
-            for i, param in enumerate(params_history.keys()):
+            X_num, X_cat = [], [] # [len(scores_history), len(params)]
+            
+            for param in params_history.keys():
                 if self.param_distributions[param].__class__.__name__ == "CategoricalDistribution":
                     cat_params.append(param)
+                    X_cat.append(params_history[param])
+                    
                 elif self.param_distributions[param].__class__.__name__ != "CategoricalDistribution":
                     num_params.append(param)
+                    distr = self.param_distributions[param]
+                    X_num.append(distr.scale(params_history[param]))
                     
-            # Скейлим и собираем history в матрицу
-            X_num = np.zeros([len(scores_history), len(num_params)])  # [num_iters, params]
-            for i, param in enumerate(num_params):
-                scaled_param = self.param_distributions[param].scale(params_history[param])
-                X_num[:, i] = scaled_param
-                
+            X_num, X_cat = np.array(X_num).T, np.array(X_cat).T ################# X_cat использовать
+            
             # Для числовых гиперпараметров
             if len(num_params) > 0:
                 # Обучаем Гауссовский Процесс на числовых гиперпараметрах
@@ -290,12 +292,12 @@ class GPOptimizer(BaseOptimizer):
                                                random_state=self.random_state)
                 gpr.fit(X_num, scores_history)
                 
-                # Скейлим и собираем sample в матрицу
+                # Скейлим и собираем sampled_params в матрицу
                 sample_size = len(sampled_params[num_params[0]])
-                X_num_sample = np.zeros([sample_size, len(num_params)])  # [sample_size, params]
+                X_num_sample = np.zeros([sample_size, len(num_params)])  # [sample_size, #params]
                 for i, param in enumerate(num_params):
-                    scaled_param_sample = self.param_distributions[param].scale(sampled_params[param])
-                    X_num_sample[:, i] = scaled_param_sample
+                    distr = self.param_distributions[param]
+                    X_num_sample[:, i] = distr.scale(sampled_params[param])
                     
                 # Ищем лучший гиперпараметр через индекс максимального Exepcted Improvement
                 mu, sigma = gpr.predict(X_num_sample, return_std=True)
@@ -310,30 +312,32 @@ class GPOptimizer(BaseOptimizer):
             # Для категориальных гиперпараметров
             if len(cat_params) > 0:
                 for param in cat_params:
-                    mu, sigma = np.array([]), np.array([])
+                    mu, sigma = [], []
                     f_vec = params_history[param]
                     y_star = np.max(scores_history)
+                    categories = self.param_distributions[param].categories
                     
-                    for c in self.param_distributions[param].categories:
-                        # mu
+                    # Подсчет mu и sigma
+                    for c in categories:
                         mu_c = np.sum((f_vec == c) * scores_history) / np.sum(f_vec == c)
                         if np.sum(f_vec == c) != 0:
-                            mu = np.append(mu, mu_c)
+                            mu.append(mu_c)
                         else:
-                            mu = np.append(mu, y_star)
+                            mu.append(y_star)
                             
-                        # sigma
                         if np.sum(f_vec == c) != 0:
                             sigma_sq_c = (1 + np.sum((f_vec == c) * (scores_history - mu_c) ** 2)) / (1 + np.sum(f_vec == c))
                         else:
                             sigma_sq_c = 0
-                        sigma = np.append(sigma, np.sqrt(sigma_sq_c))
+                        sigma.append(np.sqrt(sigma_sq_c))
+                        
+                    mu, sigma = np.array(mu), np.array(sigma)
                     
                     # Ищем лучший гиперпараметр через индекс максимального Exepcted Improvement
                     ei = self.calculate_expected_improvement(y_star, mu, sigma)
                     best_param_idx = np.argmax(ei)
                     
-                    new_params[param] = self.param_distributions[param].categories[best_param_idx]
+                    new_params[param] = categories[best_param_idx]
                     
         return new_params
     
@@ -376,8 +380,7 @@ class TPEOptimizer(BaseOptimizer):
         # log_density = np.zeros(self.num_samples_per_run)
         # Your code here (⊃｡•́‿•̀｡)⊃
         
-        kernel_dens = KernelDensity(bandwidth=bandwidth)
-        kernel_dens.fit(scaled_params_history)
+        kernel_dens = KernelDensity(bandwidth=bandwidth).fit(scaled_params_history)
         
         log_density = kernel_dens.score_samples(scaled_sampled_params)
         return log_density
@@ -396,76 +399,64 @@ class TPEOptimizer(BaseOptimizer):
         else:
             # Разделяем гиперпараметры на числовые и категориальные
             cat_params, num_params = [], []
-            for i, param in enumerate(params_history.keys()):
+            X_num, X_cat = [], []  # [len(scores_history), len(params)]
+            
+            for param in params_history.keys():
                 if self.param_distributions[param].__class__.__name__ == "CategoricalDistribution":
                     cat_params.append(param)
+                    X_cat.append(params_history[param])
+                    
                 elif self.param_distributions[param].__class__.__name__ != "CategoricalDistribution":
                     num_params.append(param)
-                    
-            # Скейлим и собираем history в матрицу
-            X_num = np.zeros([len(scores_history), len(num_params)])  # [num_iters, params]
-            X_cat = np.zeros([len(scores_history), len(cat_params)])  # [num_iters, params]
+                    distr = self.param_distributions[param]
+                    X_num.append(distr.scale(params_history[param]))
+                                    
+            X_num, X_cat = np.array(X_num).T, np.array(X_cat).T
             
-            for i, param in enumerate(num_params):
-                distr = self.param_distributions[param]
-                X_num[:, i] = distr.scale(params_history[param])
-                
-            for i, param in enumerate(cat_params):
-                distr = self.param_distributions[param]
-                X_cat[:, i] = distr.scale(params_history[param])
-                
             # Для числовых гиперпараметров
             if len(num_params) > 0:
                 # Разделяем выборку по квантилю
-                quant_level = np.quantile(scores_history, self.gamma)
-                X_great = X_num[np.where(scores_history >= quant_level)]
-                X_lower = X_num[np.where(scores_history < quant_level)]
+                q = np.quantile(scores_history, self.gamma)
+                X_great = X_num[np.where(scores_history >= q)]
+                X_lower = X_num[np.where(scores_history < q)]
                 
                 # Скейлим и собираем sample в матрицу
                 sample_size = len(sampled_params[num_params[0]])
-                X_num_sample = np.zeros([sample_size, len(num_params)])  # [sample_size, params]
+                X_num_sample = np.zeros([sample_size, len(num_params)])  # [sample_size, #params]
                 for i, param in enumerate(num_params):
-                    scaled_param_sample = self.param_distributions[param].scale(sampled_params[param])
-                    X_num_sample[:, i] = scaled_param_sample
+                    distribution = self.param_distributions[param]
+                    X_num_sample[:, i] = distribution.scale(sampled_params[param])
                 
                 # Ищем лучший гиперпараметр
                 nn = NearestNeighbors(n_neighbors=1).fit(X_num)
                 bandwidth = np.median(nn.kneighbors()[0])
                 
-                g_log_dens = self.estimate_log_density(X_great, X_num_sample, bandwidth)
-                l_log_dens = self.estimate_log_density(X_lower, X_num_sample, bandwidth)
+                g_log_kde = self.estimate_log_density(X_great, X_num_sample, bandwidth)
+                l_log_kde = self.estimate_log_density(X_lower, X_num_sample, bandwidth)
                 
-                best_param_idx = np.argmax(g_log_dens - l_log_dens)
+                best_param_idx = np.argmax(g_log_kde - l_log_kde)
                 for param in num_params:
                     new_params[param] = sampled_params[param][best_param_idx]
                 
             # Для категориальных гиперпараметров
             if len(cat_params) > 0:
-                mask_great = np.where(scores_history >= np.quantile(scores_history, self.gamma))
-                mask_lower = np.where(scores_history < np.quantile(scores_history, self.gamma))
-                X_great = X_cat[mask_great]
-                X_lower = X_cat[mask_lower]
+                q = np.quantile(scores_history, self.gamma)
+                X_g = X_cat[np.where(scores_history >= q)]
+                X_l = X_cat[np.where(scores_history < q)]
                 
                 for param in cat_params:
-                    cats = self.param_distributions[cat].categories
-                    prob_cat = 1 / len(cats)
+                    categories = self.param_distributions[param].categories
+                    prob_cat = 1 / len(categories)
                     
-                    mx = np.full((len(cats), len(params_history[param])),
-                                fill_value=params_history[param])
-                    mx = (mx == cats.reshape(-1, 1)).T
+                    mx = np.full((len(categories), len(params_history[param])), 
+                                 fill_value=params_history[param])
+                    mx = (mx == categories.reshape(-1, 1)).T
                     
-                    g_cat = X_great.shape[0] * prob_cat + np.sum(mx[mask_great], axis=0)
-                    l_cat = X_lower.shape[0] * prob_cat + np.sum(mx[mask_lower], axis=0)
+                    g_cat = X_g.shape[0] * prob_cat + np.sum(mx[np.where(scores_history >= q)], axis=0)
+                    l_cat = X_l.shape[0] * prob_cat + np.sum(mx[np.where(scores_history < q)], axis=0)
                     
                     best_param_idx = np.argmax(g_cat / l_cat)
-                    new_params[cat] = cats[best_param_idx]
+                    new_params[param] = categories[best_param_idx]
+                    
+        return new_params
 
-        return new_params
-        
-        
-        
-        
-        
-        
-        
-        return new_params
